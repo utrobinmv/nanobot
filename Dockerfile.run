@@ -1,0 +1,86 @@
+FROM python:3.12.9-slim
+
+# Install necessary system packages 
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get upgrade -yq && apt-get install -yq \
+                build-essential \
+                git-core \
+                pkg-config \
+                git-lfs \
+                libtool \
+                zlib1g-dev \
+                libbz2-dev \
+                automake \
+                python3-dev \
+                wget \
+                curl openssh-server sudo \
+                mc tmux \
+                build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libsqlite3-dev libreadline-dev libffi-dev curl libbz2-dev \
+                make build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev python3-openssl libgtk2.0-dev \
+                libjpeg-dev zlib1g-dev \ 
+                curl git-core gcc make zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libssl-dev tk-dev libffi-dev liblzma-dev \ 
+                python3-dev python3-venv ffmpeg libsm6 libxext6 \ 
+				&& rm -rf /var/lib/apt/lists/*
+
+RUN mkdir /var/run/sshd \
+ && sed -i 's/\#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config
+
+RUN sed 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' -i /etc/pam.d/sshd
+
+RUN useradd -mG cdrom,users,dip,plugdev -p nanobot -s /bin/bash nanobot
+
+RUN mkdir /home/nanobot/.nanobot
+
+RUN echo 'nanobot:nanobot' | chpasswd
+
+COPY ini /home/nanobot/.config/mc/ini	
+COPY menu /home/nanobot/.config/mc/menu	
+
+RUN chown -R nanobot:users /home/nanobot/.config
+
+RUN sed -re 's/^(\#)(AllowAgentForwarding)([[:space:]]+)(.*)/\2\3\4/' -i.`date -I` /etc/ssh/sshd_config
+RUN sed -re 's/^(AllowAgentForwarding)([[:space:]]+)no/\1\2yes/' -i.`date -I` /etc/ssh/sshd_config
+
+RUN sed -re 's/^(\#)(AllowTcpForwarding)([[:space:]]+)(.*)/\2\3\4/' -i.`date -I` /etc/ssh/sshd_config
+RUN sed -re 's/^(AllowTcpForwarding)([[:space:]]+)no/\1\2yes/' -i.`date -I` /etc/ssh/sshd_config
+
+RUN sed -re 's/^(\#)(X11Forwarding)([[:space:]]+)(.*)/\2\3\4/' -i.`date -I` /etc/ssh/sshd_config
+RUN sed -re 's/^(X11Forwarding)([[:space:]]+)no/\1\2yes/' -i.`date -I` /etc/ssh/sshd_config
+
+RUN sed -re 's/^(\#)(X11DisplayOffset)([[:space:]]+)(.*)/\2\3\4/' -i.`date -I` /etc/ssh/sshd_config
+
+RUN sed -re 's/^(\#)(X11UseLocalhost)([[:space:]]+)(.*)/\2\3\4/' -i.`date -I` /etc/ssh/sshd_config
+RUN sed -re 's/^(X11UseLocalhost)([[:space:]]+)yes/\1\2no/' -i.`date -I` /etc/ssh/sshd_config
+
+USER nanobot
+
+WORKDIR /app
+
+#add nexus local pypi proxy
+RUN mkdir /home/nanobot/.pip
+COPY pip.conf /home/nanobot/.pip
+
+# Install Python dependencies first (cached layer)
+COPY pyproject.toml README.md LICENSE ./
+RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
+    pip install --no-cache-dir -e . && \
+    rm -rf nanobot bridge
+
+# Copy the full source and install
+COPY nanobot/ nanobot/
+COPY bridge/ bridge/
+RUN pip install --no-cache-dir -e .
+
+ENV PATH="/app:$PATH"
+
+# Create config directory
+RUN mkdir -p /home/nanobot/.nanobot
+
+RUN curl https://pyenv.run | bash
+
+# Gateway default port
+EXPOSE 18790
+
+ENTRYPOINT ["sh", "-c", "sleep 10 && python3 nanobot --help && python3 nanobot gateway"]
+#ENTRYPOINT "nanobot"
+#CMD ["status"]
