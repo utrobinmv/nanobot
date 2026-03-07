@@ -11,6 +11,8 @@ services:
     <<: *common-config
     command: ["gateway"]
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
       - 127.0.0.1:9972:22
       - 18790:18790
