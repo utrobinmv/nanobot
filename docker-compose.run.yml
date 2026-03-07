@@ -12,6 +12,7 @@ services:
     command: ["gateway"]
     restart: unless-stopped
     ports:
+      - 127.0.0.1:9972:22
       - 18790:18790
     deploy:
       resources:
