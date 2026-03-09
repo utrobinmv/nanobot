@@ -150,6 +150,18 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Matrix channel not available: {}", e)
 
+        # MAX channel
+        if self.config.channels.max.enabled:
+            try:
+                from nanobot.channels.max import MaxChannel
+                self.channels["max"] = MaxChannel(
+                    self.config.channels.max,
+                    self.bus,
+                )
+                logger.info("MAX channel enabled")
+            except ImportError as e:
+                logger.warning("MAX channel not available: {}", e)
+
         self._validate_allow_from()
 
     def _validate_allow_from(self) -> None:

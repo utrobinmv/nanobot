@@ -199,6 +199,12 @@ class QQConfig(Base):
     )  # Allowed user openids (empty = public access)
 
 
+class MaxConfig(Base):
+    """MAX messenger channel configuration."""
+
+    enabled: bool = False
+    token: str = ""  # Bot token (can be from env MAX_BOT_TOKEN)
+    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
 
 
 class ChannelsConfig(Base):
@@ -216,6 +222,7 @@ class ChannelsConfig(Base):
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
+    max: MaxConfig = Field(default_factory=MaxConfig)
 
 
 class AgentDefaults(Base):
