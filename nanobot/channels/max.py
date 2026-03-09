@@ -7,8 +7,8 @@ from typing import Any
 
 from loguru import logger
 
-from maxapi import Bot, Dispatcher
-from maxapi.types import MessageCreated, Command
+from maxapi import Bot, Dispatcher, F
+from maxapi.types import MessageCreated, Command, BotStarted
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
@@ -39,11 +39,17 @@ class MaxChannel(BaseChannel):
         self.dp: Dispatcher | None = None
         self._running = False
         self._chat_ids: dict[str, str] = {}  # Map sender_id to chat_id for replies
+        self._polling_task: asyncio.Task | None = None
 
     def _setup_handlers(self) -> None:
         """Set up message handlers for the dispatcher."""
         if not self.dp:
             return
+
+        @self.dp.bot_started()
+        async def on_bot_started(event: BotStarted) -> None:
+            """Handle bot started event."""
+            logger.info("MAX bot started successfully")
 
         @self.dp.message_created(Command('start'))
         async def start_handler(event: MessageCreated) -> None:
@@ -90,9 +96,14 @@ class MaxChannel(BaseChannel):
                 "/help — Показать команды"
             )
 
-        @self.dp.message_created()
-        async def message_handler(event: MessageCreated) -> None:
-            """Handle all incoming messages."""
+        @self.dp.message_created(F.message.body.text)
+        async def text_handler(event: MessageCreated) -> None:
+            """Handle text messages (non-commands)."""
+            await self._on_message(event)
+
+        @self.dp.message_created(F.message.body.attachments)
+        async def attachment_handler(event: MessageCreated) -> None:
+            """Handle messages with attachments."""
             await self._on_message(event)
 
     async def _forward_command(self, event: MessageCreated) -> None:
@@ -128,9 +139,8 @@ class MaxChannel(BaseChannel):
         # Handle media if present
         media_paths: list[str] = []
         if event.message.body.attachments:
-            # TODO: Implement media download if maxapi supports it
             logger.debug("MAX message has {} attachments", len(event.message.body.attachments))
-            # For now, just note in content
+            # For now, just note in content (media download not yet implemented)
             content += f"\n[{len(event.message.body.attachments)} attachment(s)]"
 
         logger.debug("MAX message from {}: {}...", sender_id, content[:50])
@@ -147,15 +157,15 @@ class MaxChannel(BaseChannel):
     @staticmethod
     def _get_sender_id(event: MessageCreated) -> str:
         """Extract sender ID from event."""
-        if event.message.from_user:
-            return str(event.message.from_user.id)
+        if event.from_user:
+            return str(event.from_user.user_id)
         return str(event.message.id)
 
     @staticmethod
     def _get_chat_id(event: MessageCreated) -> str:
         """Extract chat ID from event."""
-        if event.message.chat:
-            return str(event.message.chat.id)
+        if event.chat:
+            return str(event.chat.chat_id)
         return str(event.message.id)
 
     @staticmethod
@@ -165,14 +175,15 @@ class MaxChannel(BaseChannel):
             "message_id": str(event.message.id),
         }
 
-        if event.message.from_user:
-            metadata["user_id"] = event.message.from_user.id
-            metadata["username"] = getattr(event.message.from_user, "username", None)
-            metadata["first_name"] = getattr(event.message.from_user, "first_name", None)
+        if event.from_user:
+            metadata["user_id"] = event.from_user.user_id
+            metadata["username"] = getattr(event.from_user, "username", None)
+            metadata["first_name"] = getattr(event.from_user, "first_name", None)
 
-        if event.message.chat:
-            metadata["chat_id"] = event.message.chat.id
-            metadata["chat_type"] = getattr(event.message.chat, "type", None)
+        if event.chat:
+            metadata["chat_id"] = event.chat.chat_id
+            metadata["chat_title"] = getattr(event.chat, "title", None)
+            metadata["chat_type"] = getattr(event.chat, "type", None)
 
         return metadata
 
@@ -207,14 +218,17 @@ class MaxChannel(BaseChannel):
         self._running = False
         logger.info("Stopping MAX bot...")
 
-        # TODO: Implement proper shutdown if maxapi provides it
-        # For now, just mark as stopped
+        # Cancel polling task if exists
+        if self._polling_task and not self._polling_task.done():
+            self._polling_task.cancel()
+
+        # Clean up
         self.bot = None
         self.dp = None
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through MAX."""
-        if not self.bot or not self.dp:
+        if not self.bot:
             logger.warning("MAX bot not running")
             return
 
@@ -245,11 +259,9 @@ class MaxChannel(BaseChannel):
 
         try:
             # Use the bot's send_message method
-            # Note: maxapi might have different API, adjust as needed
             await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                reply_to_message_id=reply_to_message_id,
             )
         except Exception as e:
             logger.error("Error sending MAX message: {}", e)

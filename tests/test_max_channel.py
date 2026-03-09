@@ -8,11 +8,53 @@ from nanobot.channels.max import MaxChannel
 from nanobot.config.schema import MaxConfig
 
 
-class _FakeBot:
-    def __init__(self) -> None:
-        self.sent_messages: list[dict] = []
-        self.token_value = None
+class _FakeUser:
+    def __init__(self, user_id: str = "user_123", username: str | None = None, first_name: str = "Test User"):
+        self.user_id = user_id
+        self.username = username
+        self.first_name = first_name
 
+
+class _FakeChat:
+    def __init__(self, chat_id: str = "chat_123", title: str | None = None, chat_type: str | None = None):
+        self.chat_id = chat_id
+        self.title = title
+        self.type = chat_type
+
+
+class _FakeMessageBody:
+    def __init__(self, text: str = "", attachments: list | None = None):
+        self.text = text
+        self.attachments = attachments or []
+
+
+class _FakeMessage:
+    def __init__(
+        self,
+        message_id: str = "msg_123",
+        text: str = "",
+        attachments: list | None = None,
+    ) -> None:
+        self.id = message_id
+        self.body = _FakeMessageBody(text=text, attachments=attachments)
+
+    async def answer(self, text: str, **kwargs) -> None:
+        pass
+
+
+class _FakeEvent:
+    def __init__(
+        self,
+        message: _FakeMessage | None = None,
+        from_user: _FakeUser | None = None,
+        chat: _FakeChat | None = None,
+    ) -> None:
+        self.message = message or _FakeMessage()
+        self.from_user = from_user
+        self.chat = chat
+
+
+class _FakeBot:
     def __init__(self, token=None):
         self.token_value = token
         self.sent_messages: list[dict] = []
@@ -21,48 +63,32 @@ class _FakeBot:
         self.sent_messages.append(kwargs)
 
 
-class _FakeMessage:
-    def __init__(
-        self,
-        message_id: str = "msg_123",
-        text: str = "",
-        from_user_id: str = "user_123",
-        chat_id: str = "chat_123",
-        attachments: list | None = None,
-    ) -> None:
-        self.id = message_id
-        self.body = SimpleNamespace(text=text, attachments=attachments or [])
-        self.from_user = SimpleNamespace(id=from_user_id, username=None, first_name="Test User")
-        self.chat = SimpleNamespace(id=chat_id, type="private")
-
-    async def answer(self, text: str) -> None:
-        pass
-
-
-class _FakeEvent:
-    def __init__(self, message: _FakeMessage | None = None) -> None:
-        self.message = message or _FakeMessage()
-
-
 class _FakeDispatcher:
     def __init__(self) -> None:
         self.handlers: list[tuple[str, callable]] = []
-        self._polling_task: asyncio.Task | None = None
+        self._polling_running = False
 
-    def message_created(self, command=None):
+    def message_created(self, *filters):
         def decorator(handler):
-            self.handlers.append((command, handler))
+            filter_str = str(filters) if filters else "all"
+            self.handlers.append((filter_str, handler))
+            return handler
+        return decorator
+
+    def bot_started(self):
+        def decorator(handler):
+            self.handlers.append(("bot_started", handler))
             return handler
         return decorator
 
     async def start_polling(self, bot) -> None:
+        self._polling_running = True
         # Simulate polling loop
-        while True:
+        while self._polling_running:
             await asyncio.sleep(1)
 
     async def stop_polling(self) -> None:
-        if self._polling_task and not self._polling_task.done():
-            self._polling_task.cancel()
+        self._polling_running = False
 
 
 @pytest.mark.asyncio
@@ -91,6 +117,7 @@ async def test_start_initializes_bot_with_token(monkeypatch) -> None:
     start_task = asyncio.create_task(channel.start())
     await asyncio.sleep(0.1)
     channel._running = False
+    channel._polling_task = None  # Clear task to avoid errors
     await channel.stop()
 
     assert original_bot is not None
@@ -122,11 +149,12 @@ async def test_start_sets_up_handlers(monkeypatch) -> None:
     start_task = asyncio.create_task(channel.start())
     await asyncio.sleep(0.1)
     channel._running = False
+    channel._polling_task = None
     await channel.stop()
 
     assert dispatcher_instance is not None
-    # Should have handlers for start, new, stop, help, and general messages
-    assert len(dispatcher_instance.handlers) >= 5
+    # Should have handlers for bot_started, start, new, stop, help, text, attachments
+    assert len(dispatcher_instance.handlers) >= 7
 
 
 def test_get_sender_id_from_event() -> None:
@@ -134,7 +162,7 @@ def test_get_sender_id_from_event() -> None:
     config = MaxConfig(enabled=True, token="test", allow_from=["*"])
     channel = MaxChannel(config, MessageBus())
 
-    event = _FakeEvent(_FakeMessage(from_user_id="user_456"))
+    event = _FakeEvent(from_user=_FakeUser(user_id="user_456"))
     sender_id = MaxChannel._get_sender_id(event)
 
     assert sender_id == "user_456"
@@ -145,7 +173,7 @@ def test_get_chat_id_from_event() -> None:
     config = MaxConfig(enabled=True, token="test", allow_from=["*"])
     channel = MaxChannel(config, MessageBus())
 
-    event = _FakeEvent(_FakeMessage(chat_id="chat_789"))
+    event = _FakeEvent(chat=_FakeChat(chat_id="chat_789"))
     chat_id = MaxChannel._get_chat_id(event)
 
     assert chat_id == "chat_789"
@@ -156,11 +184,11 @@ def test_build_metadata_includes_user_info() -> None:
     config = MaxConfig(enabled=True, token="test", allow_from=["*"])
     channel = MaxChannel(config, MessageBus())
 
-    event = _FakeEvent(_FakeMessage(
-        message_id="msg_999",
-        from_user_id="user_123",
-        chat_id="chat_456",
-    ))
+    event = _FakeEvent(
+        message=_FakeMessage(message_id="msg_999"),
+        from_user=_FakeUser(user_id="user_123"),
+        chat=_FakeChat(chat_id="chat_456"),
+    )
     metadata = MaxChannel._build_metadata(event)
 
     assert metadata["message_id"] == "msg_999"
@@ -199,7 +227,6 @@ async def test_send_text_message(monkeypatch) -> None:
 
     bot_instance = _FakeBot(token="test_token")
     channel.bot = bot_instance
-    channel.dp = _FakeDispatcher()
 
     await channel.send(
         OutboundMessage(
@@ -223,7 +250,6 @@ async def test_send_splits_long_messages(monkeypatch) -> None:
 
     bot_instance = _FakeBot(token="test_token")
     channel.bot = bot_instance
-    channel.dp = _FakeDispatcher()
 
     # Create a message longer than MAX_MAX_MESSAGE_LEN
     long_content = "A" * 5000
@@ -249,7 +275,6 @@ async def test_send_handles_empty_content() -> None:
 
     bot_instance = _FakeBot(token="test_token")
     channel.bot = bot_instance
-    channel.dp = _FakeDispatcher()
 
     await channel.send(
         OutboundMessage(
@@ -271,7 +296,6 @@ async def test_send_warns_when_bot_not_running(monkeypatch, caplog) -> None:
 
     # Don't initialize bot
     channel.bot = None
-    channel.dp = None
 
     await channel.send(
         OutboundMessage(
@@ -327,12 +351,11 @@ async def test_on_message_forwards_to_bus(monkeypatch) -> None:
 
     monkeypatch.setattr(bus, "publish_inbound", mock_publish_inbound)
 
-    event = _FakeEvent(_FakeMessage(
-        message_id="msg_123",
-        text="Test message",
-        from_user_id="user_123",
-        chat_id="chat_456",
-    ))
+    event = _FakeEvent(
+        message=_FakeMessage(message_id="msg_123", text="Test message"),
+        from_user=_FakeUser(user_id="user_123"),
+        chat=_FakeChat(chat_id="chat_456"),
+    )
 
     await channel._on_message(event)
 
@@ -357,12 +380,11 @@ async def test_on_message_denies_unauthorized_users(monkeypatch) -> None:
 
     monkeypatch.setattr(bus, "publish_inbound", mock_publish_inbound)
 
-    event = _FakeEvent(_FakeMessage(
-        message_id="msg_123",
-        text="Test message",
-        from_user_id="unauthorized_user",
-        chat_id="chat_456",
-    ))
+    event = _FakeEvent(
+        message=_FakeMessage(message_id="msg_123", text="Test message"),
+        from_user=_FakeUser(user_id="unauthorized_user"),
+        chat=_FakeChat(chat_id="chat_456"),
+    )
 
     await channel._on_message(event)
 
@@ -384,14 +406,39 @@ async def test_forward_command_forwards_to_bus(monkeypatch) -> None:
 
     monkeypatch.setattr(bus, "publish_inbound", mock_publish_inbound)
 
-    event = _FakeEvent(_FakeMessage(
-        message_id="msg_123",
-        text="/start",
-        from_user_id="user_123",
-        chat_id="chat_456",
-    ))
+    event = _FakeEvent(
+        message=_FakeMessage(message_id="msg_123", text="/start"),
+        from_user=_FakeUser(user_id="user_123"),
+        chat=_FakeChat(chat_id="chat_456"),
+    )
 
     await channel._forward_command(event)
 
     assert len(received_messages) == 1
     assert received_messages[0].content == "/start"
+
+
+@pytest.mark.asyncio
+async def test_on_message_handles_attachments(monkeypatch) -> None:
+    """Test that messages with attachments are handled."""
+    config = MaxConfig(enabled=True, token="test_token", allow_from=["*"])
+    bus = MessageBus()
+    channel = MaxChannel(config, bus)
+
+    received_messages = []
+
+    async def mock_publish_inbound(msg):
+        received_messages.append(msg)
+
+    monkeypatch.setattr(bus, "publish_inbound", mock_publish_inbound)
+
+    event = _FakeEvent(
+        message=_FakeMessage(message_id="msg_123", text="File attached", attachments=["file1.pdf", "file2.jpg"]),
+        from_user=_FakeUser(user_id="user_123"),
+        chat=_FakeChat(chat_id="chat_456"),
+    )
+
+    await channel._on_message(event)
+
+    assert len(received_messages) == 1
+    assert "[2 attachment(s)]" in received_messages[0].content
