@@ -10,9 +10,11 @@ from datetime import date
 from email import policy
 from email.header import decode_header, make_header
 from email.message import EmailMessage
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
 from email.parser import BytesParser
 from email.utils import parseaddr
-from typing import Any
+from typing import Any, Union
 
 from loguru import logger
 from pydantic import Field
@@ -50,6 +52,7 @@ class EmailConfig(Base):
     max_body_chars: int = 12000
     subject_prefix: str = "Re: "
     allow_from: list[str] = Field(default_factory=list)
+    max_attachment_size_mb: int = Field(default=2, ge=1, le=15)
 
 
 class EmailChannel(BaseChannel):
@@ -154,6 +157,78 @@ class EmailChannel(BaseChannel):
         """Stop polling loop."""
         self._running = False
 
+    def _download_image(self, path_or_url: str) -> bytes | None:
+        """Download image from URL or read from local path with size/type checks."""
+        # Check if it's a URL
+        if path_or_url.startswith(("http://", "https://")):
+            # URL-based flow (existing logic)
+            try:
+                head_resp = requests.head(path_or_url, timeout=10, allow_redirects=True)
+                head_resp.raise_for_status()
+            except Exception as e:
+                logger.warning("HEAD request failed for {}: {}", path_or_url, e)
+                return None
+
+            content_type = head_resp.headers.get("Content-Type", "").lower()
+            if not content_type.startswith("image/"):
+                logger.warning("URL is not an image (Content-Type: {}): {}", content_type, path_or_url)
+                return None
+
+            content_length = head_resp.headers.get("Content-Length")
+            if content_length:
+                size_bytes = int(content_length)
+                max_size_bytes = self.config.max_attachment_size_mb * 1024 * 1024
+                if size_bytes > max_size_bytes:
+                    logger.warning(
+                        "Image too large ({:.2f} MB > {} MB): {}",
+                        size_bytes / (1024 * 1024),
+                        self.config.max_attachment_size_mb,
+                        path_or_url,
+                    )
+                    return None
+
+            # GET request to fetch image
+            try:
+                resp = requests.get(path_or_url, timeout=30, allow_redirects=True)
+                resp.raise_for_status()
+                return resp.content
+            except Exception as e:
+                logger.warning("Failed to download image {}: {}", path_or_url, e)
+                return None
+
+        else:
+            # Local file path
+            import os
+            if not os.path.isfile(path_or_url):
+                logger.warning("File does not exist: {}", path_or_url)
+                return None
+
+            # Check size
+            size_bytes = os.path.getsize(path_or_url)
+            max_size_bytes = self.config.max_attachment_size_mb * 1024 * 1024
+            if size_bytes > max_size_bytes:
+                logger.warning(
+                    "Image too large ({:.2f} MB > {} MB): {}",
+                    size_bytes / (1024 * 1024),
+                    self.config.max_attachment_size_mb,
+                    path_or_url,
+                )
+                return None
+
+            # Check extension
+            ext = path_or_url.lower().split(".")[-1]
+            if ext not in ("jpg", "jpeg", "png", "gif", "webp", "bmp"):
+                logger.warning("Unsupported image extension: {} (path: {})", ext, path_or_url)
+                return None
+
+            # Read file
+            try:
+                with open(path_or_url, "rb") as f:
+                    return f.read()
+            except Exception as e:
+                logger.warning("Failed to read image file {}: {}", path_or_url, e)
+                return None
+
     async def send(self, msg: OutboundMessage) -> None:
         """Send email via SMTP."""
         if not self.config.consent_granted:
@@ -185,11 +260,48 @@ class EmailChannel(BaseChannel):
             if override:
                 subject = override
 
-        email_msg = EmailMessage()
-        email_msg["From"] = self.config.from_address or self.config.smtp_username or self.config.imap_username
-        email_msg["To"] = to_addr
-        email_msg["Subject"] = subject
-        email_msg.set_content(msg.content or "")
+        # Check for media attachments
+        if msg.media:
+            # Build multipart email with images
+            max_size_bytes = self.config.max_attachment_size_mb * 1024 * 1024
+            multipart = MIMEMultipart("mixed")
+            multipart["From"] = self.config.from_address or self.config.smtp_username or self.config.imap_username
+            multipart["To"] = to_addr
+            multipart["Subject"] = subject
+
+            # Add text body
+            text_part = EmailMessage()
+            text_part.set_content(msg.content or "")
+            multipart.attach(text_part)
+
+            # Process media attachments
+            for idx, media_url in enumerate(msg.media):
+                image_data = self._download_image(media_url)
+                if image_data is None:
+                    continue
+
+                filename = f"attachment_{idx + 1}.png"  # default fallback
+                try:
+                    # Try to infer extension from URL
+                    ext = media_url.split(".")[-1].lower()
+                    if ext not in ("jpg", "jpeg", "png", "gif", "webp", "bmp"):
+                        ext = "png"
+                    filename = f"image_{idx + 1}.{ext}"
+                except Exception:
+                    pass
+
+                mime_image = MIMEImage(image_data, name=filename)
+                mime_image.add_header("Content-Disposition", "attachment", filename=filename)
+                multipart.attach(mime_image)
+
+            email_msg = multipart
+        else:
+            # Original simple email
+            email_msg = EmailMessage()
+            email_msg["From"] = self.config.from_address or self.config.smtp_username or self.config.imap_username
+            email_msg["To"] = to_addr
+            email_msg["Subject"] = subject
+            email_msg.set_content(msg.content or "")
 
         in_reply_to = self._last_message_id_by_chat.get(to_addr)
         if in_reply_to:
@@ -222,7 +334,7 @@ class EmailChannel(BaseChannel):
             return False
         return True
 
-    def _smtp_send(self, msg: EmailMessage) -> None:
+    def _smtp_send(self, msg: Union[EmailMessage, MIMEMultipart]) -> None:
         timeout = 30
         if self.config.smtp_use_ssl:
             with smtplib.SMTP_SSL(
