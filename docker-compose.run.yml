@@ -2,20 +2,26 @@ x-common-config: &common-config
   build:
     context: .
     dockerfile: Dockerfile.run
+    args:
+        CUSTOM_SSH_PORT: ${SSH_PORT}
+        CUSTOM_UID: ${NANOBOT_UID}
+        CUSTOM_GID: ${NANOBOT_GID}
+  env_file:
+    - .env
   volumes:
     - ~/.nanobot:/home/nanobot/.nanobot
-
+  network_mode: host # host для wakeonlan
+  # network_mode: bridge
+  
 services:
   nanobot-gateway:
     container_name: nanobot-gateway
     <<: *common-config
     command: ["gateway"]
     restart: unless-stopped
-    env_file:
-      - .env
-    ports:
-      - 127.0.0.1:9972:22
-      - 18790:18790
+    #ports:
+    #  - 127.0.0.1:9972:2222
+    #  - 18790:18790
     deploy:
       resources:
         limits:

@@ -29,6 +29,13 @@ RUN sed 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so
 
 RUN useradd -mG cdrom,users,dip,plugdev -p nanobot -s /bin/bash nanobot
 
+ARG SSH_PORT_ARG=2222
+ARG CUSTOM_UID=1000
+ARG CUSTOM_GID=1000
+
+RUN usermod -u $CUSTOM_UID nanobot
+RUN groupmod -g $CUSTOM_GID nanobot
+
 RUN mkdir /home/nanobot/.nanobot
 
 RUN echo 'nanobot:nanobot' | chpasswd
@@ -37,6 +44,9 @@ COPY mc/ini /home/nanobot/.config/mc/ini
 COPY mc/menu /home/nanobot/.config/mc/menu	
 
 RUN chown -R nanobot:users /home/nanobot/.config
+
+RUN sed -re 's/^(\#)(Port)([[:space:]]+)(.*)/\2\3\4/' -i.`date -I` /etc/ssh/sshd_config
+RUN sed -re "s/^(Port)([[:space:]]+)([0-9]+)/\1\2${SSH_PORT_ARG}/" -i.`date -I` /etc/ssh/sshd_config
 
 RUN sed -re 's/^(\#)(AllowAgentForwarding)([[:space:]]+)(.*)/\2\3\4/' -i.`date -I` /etc/ssh/sshd_config
 RUN sed -re 's/^(AllowAgentForwarding)([[:space:]]+)no/\1\2yes/' -i.`date -I` /etc/ssh/sshd_config
@@ -84,11 +94,16 @@ USER root
 
 #RUN apt-get update && apt-get install -yq 
 
-USER nanobot
-
+#USER nanobot
 # Gateway default port
 EXPOSE 18790
 
-ENTRYPOINT ["sh", "-c", "sleep 10 && python3 nanobot --help && python3 nanobot gateway"]
+#ENTRYPOINT ["sh", "-c", "sleep 10 && python3 nanobot --help && python3 nanobot gateway"]
 #ENTRYPOINT "nanobot"
+
+ENTRYPOINT ["sh", "-c", "\
+    /usr/sbin/sshd; \
+    sleep 10; \
+    exec su nanobot -s /bin/bash -c 'source /etc/profile && export PATH=/app:$PATH && python3 nanobot --help && python3 nanobot gateway'"]
+    
 #CMD ["status"]
