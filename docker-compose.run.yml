@@ -30,6 +30,10 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+          devices:
+            - driver: nvidia
+              device_ids: ['${NVIDIA_VISIBLE_DEVICES}'] 
+              capabilities: [gpu]  
   
   nanobot-cli:
     <<: *common-config
