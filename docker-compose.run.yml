@@ -10,6 +10,10 @@ x-common-config: &common-config
     - .env
   volumes:
     - ~/.nanobot:/home/nanobot/.nanobot
+    - ~/data/tmp/nanobot_cache/vscodium-server:/home/nanobot/.vscodium-server
+    - ~/data/tmp/nanobot_cache/vscode-server:/home/nanobot/.vscode-server
+    - ~/data/tmp/nanobot_cache/cache:/home/nanobot/.cache
+    - ~/data/tmp/nanobot_cache/pyenv:/home/nanobot/.pyenv
   network_mode: host # host для wakeonlan
   # network_mode: bridge
   
